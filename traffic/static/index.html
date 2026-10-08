@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Factory Traffic Management</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1d2330;--mut:#6b7385;--bd:#dde0e7;--red:#e5484d;--yel:#f5b800;--grn:#2fb15a;--unk:#9aa1b2}
+@media(prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--tx:#e8ebf2;--mut:#98a0b3;--bd:#2c3340}}
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--card);flex-wrap:wrap}
+h1{font-size:17px;margin:0;flex:1}h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;padding:12px;max-width:1300px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}
+.badge{display:inline-block;padding:2px 9px;border-radius:99px;font-weight:600;font-size:12px;color:#fff;background:var(--unk)}
+.AUTOMATIC,.ONLINE{background:var(--grn)}.MANUAL,.WARNING{background:#3b82f6}.EMERGENCY,.OFFLINE,.DEGRADED{background:var(--red)}.UNKNOWN{background:var(--unk)}
+table{width:100%;border-collapse:collapse}td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--bd)}
+.dot{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:4px;background:var(--unk)}
+.RED{background:var(--red)}.YELLOW{background:var(--yel)}.GREEN{background:var(--grn)}
+.alert{padding:6px 8px;border-radius:6px;margin:4px 0;border-left:4px solid var(--unk);background:var(--bg)}
+.alert.critical{border-color:var(--red)}.alert.warning{border-color:var(--yel)}.alert.info{border-color:#3b82f6}
+button,select,input{font:inherit;padding:5px 9px;border-radius:6px;border:1px solid var(--bd);background:var(--card);color:var(--tx)}
+button{cursor:pointer;background:#2b6cf6;color:#fff;border:0}button.sec{background:var(--bd);color:var(--tx)}button.danger{background:var(--red)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}
+#err{display:none;background:var(--red);color:#fff;padding:8px 16px}
+#hist{max-height:260px;overflow:auto;font-size:12px}#hist div{padding:3px 0;border-bottom:1px solid var(--bd)}
+svg text{fill:var(--tx);font-size:12px}.mut{color:var(--mut)}.wide{grid-column:1/-1}
+</style></head><body>
+<div id="err"></div>
+<header><h1>Factory Traffic Management</h1>
+ <label>Junction <select id="jsel"></select></label>
+ <span id="live" class="mut">connecting…</span></header>
+<main>
+ <section class="card"><h2>Junction overview</h2><div id="overview"></div><div id="alerts"></div></section>
+ <section class="card"><h2>Intersection (backend state)</h2><svg id="x" viewBox="0 0 300 300" width="100%" style="max-height:300px">
+  <rect x="0" y="120" width="300" height="60" fill="#8a90a0"/><rect x="120" y="0" width="60" height="300" fill="#8a90a0"/>
+  <text x="150" y="14" text-anchor="middle">NORTH</text><text x="150" y="296" text-anchor="middle">SOUTH</text>
+  <text x="4" y="150">WEST</text><text x="296" y="150" text-anchor="end">EAST</text>
+  <g id="lights"></g></svg>
+  <div class="mut">Filled circle = <b>actual</b> (confirmed). Ring = <b>desired</b>. Grey = unknown.</div></section>
+ <section class="card"><h2>Signals</h2><table id="sig"></table><h2 style="margin-top:12px">Queues</h2><table id="q"></table></section>
+ <section class="card"><h2>Manual control</h2><div id="manual" class="mut"></div>
+  <div class="row"><select id="mdir"></select><button id="mbtn">Request manual GREEN</button>
+  <button class="sec" id="rbtn">Return to automatic</button></div>
+  <h2 style="margin-top:12px">Pending controller commands</h2><div id="pend" class="mut"></div></section>
+ <section class="card"><h2>Traffic simulation</h2>
+  <div class="row"><select id="sdir"></select><select id="stype"><option>EMPLOYEE_VEHICLE</option><option>FORKLIFT</option><option>TRUCK</option><option>EMERGENCY</option></select>
+  <input id="svid" placeholder="vehicle id (auto)" size="12"></div>
+  <div class="row"><button id="arr">Vehicle arrives</button><button class="sec" id="clr">Vehicle cleared</button>
+  <button class="danger" id="emg">Emergency arrives</button><button class="sec" id="dup">Resend last event (duplicate)</button></div>
+  <h2 style="margin-top:12px">Controller simulation</h2>
+  <div class="row"><label><input type="checkbox" id="auto"> auto-ACK commands</label></div>
+  <div class="row"><button class="sec" id="ackall">ACK all pending</button><button class="sec" id="nack">NACK first pending</button></div>
+  <div class="row"><button class="danger" id="coff">Controller OFFLINE</button><button class="sec" id="con">Controller ONLINE</button>
+  <button class="danger" id="soff">Sensor OFFLINE (dir)</button><button class="sec" id="son">Sensor ONLINE (dir)</button></div>
+  <div id="simmsg" class="mut"></div></section>
+ <section class="card wide"><h2>Recent activity</h2><div id="hist"></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let J=null,S=null,lastEv=null,n=0,fails=0;
+const POS={NORTH:[150,50],SOUTH:[150,250],EAST:[250,150],WEST:[50,150]};
+function showErr(m){const e=$('err');e.textContent=m;e.style.display=m?'block':'none'}
+async function api(m,p,b){let r;try{r=await fetch(p,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined})}
+ catch(e){throw new Error('Backend unavailable')}
+ let d=null;try{d=await r.json()}catch(e){}
+ if(!r.ok)throw new Error((d&&d.message)||('HTTP '+r.status));return d}
+const act=async(f,ok)=>{try{const d=await f();$('simmsg').textContent=ok?ok(d):JSON.stringify(d);showErr('');refresh()}catch(e){showErr(e.message);$('simmsg').textContent='Error: '+e.message}};
+const badge=t=>`<span class="badge ${t}">${t}</span>`;
+const dot=s=>`<span class="dot ${s}"></span>${s}`;
+async function loadJ(){try{const l=await api('GET','/api/junctions');const sel=$('jsel'),cur=sel.value;
+ sel.innerHTML=l.map(j=>`<option>${j.junction_id}</option>`).join('');if(cur)sel.value=cur;}catch(e){showErr(e.message)}}
+async function refresh(){const id=$('jsel').value;if(!id)return;
+ try{S=await api('GET',`/api/junctions/${encodeURIComponent(id)}/status`);const h=await api('GET',`/api/junctions/${encodeURIComponent(id)}/history?limit=40`);
+  fails=0;showErr('');$('live').textContent='live · '+new Date().toLocaleTimeString();render(S,h)}
+ catch(e){fails++;$('live').textContent='offline';showErr(e.message+(fails>1?' — retrying…':''))}}
+function render(s,h){
+ for(const [sel,list] of [['mdir',s.directions],['sdir',s.directions]]){const el=$(sel),v=el.value;
+  if(el.options.length!==list.length){el.innerHTML=list.map(d=>`<option>${d}</option>`).join('');if(v)el.value=v}}
+ $('overview').innerHTML=`<table>
+ <tr><td>Mode</td><td>${badge(s.mode)}</td></tr><tr><td>Phase</td><td>${s.phase||'— (all red)'} <span class="mut">stage ${s.stage}, ${s.stage_remaining_seconds}s</span></td></tr>
+ <tr><td>Controller</td><td>${badge(s.controller_status)}</td></tr><tr><td>Health</td><td>${badge(s.health)}</td></tr>
+ <tr><td>Emergency</td><td>${s.emergencies.length?badge('EMERGENCY')+' '+s.emergencies.map(e=>e.vehicle_id+' from '+e.direction).join(', '):'none'}</td></tr>
+ <tr><td>Sensors</td><td>${Object.entries(s.device_status.sensors).map(([d,v])=>d[0]+': '+badge(v)).join(' ')}</td></tr></table>`;
+ $('alerts').innerHTML=s.alerts.length?s.alerts.map(a=>`<div class="alert ${a.level}"><b>${a.code}</b> — ${a.message}</div>`).join(''):'<div class="mut" style="margin-top:8px">No active alerts</div>';
+ $('lights').innerHTML=s.directions.map(d=>{const [x,y]=POS[d]||[150,150];return `<circle cx="${x}" cy="${y}" r="20" fill="var(--${({RED:'red',YELLOW:'yel',GREEN:'grn'})[s.actual_signals[d]]||'unk'})" stroke="var(--${({RED:'red',YELLOW:'yel',GREEN:'grn'})[s.desired_signals[d]]||'unk'})" stroke-width="6"/><text x="${x}" y="${y+4}" text-anchor="middle" style="fill:#fff;font-weight:700">${s.queues[d]}</text>`}).join('');
+ $('sig').innerHTML='<tr><th>Dir</th><th>Desired</th><th>Actual (confirmed)</th></tr>'+s.directions.map(d=>`<tr><td>${d}</td><td>${dot(s.desired_signals[d])}</td><td>${dot(s.actual_signals[d])}${s.desired_signals[d]!==s.actual_signals[d]?' ⚠':''}</td></tr>`).join('');
+ $('q').innerHTML='<tr><th>Dir</th><th>Waiting</th><th>By type</th></tr>'+s.directions.map(d=>`<tr><td>${d}</td><td><b>${s.queues[d]}</b></td><td class="mut">${Object.entries(s.queue_details[d]).map(([k,v])=>k+':'+v).join(' ')||'—'}</td></tr>`).join('');
+ $('manual').innerHTML=s.manual?`${badge('MANUAL')} <b>Manual override active</b> by ${s.manual.actor} → ${s.manual.direction} (expires in ${Math.max(0,Math.round(s.manual.expires-Date.now()/1000))}s)`:'Not under manual control.';
+ $('pend').innerHTML=s.pending_commands.length?s.pending_commands.map(c=>`${c.command_id}: ${c.direction}→${c.requested_state} (attempt ${c.attempts})`).join('<br>'):'none';
+ $('hist').innerHTML=h.map(a=>`<div><span class="mut">${a.timestamp.slice(11,23)}</span> <b>${a.event_type}</b> ${a.direction||''} ${a.previous_state||''}${a.new_state?' → '+a.new_state:''} ${a.command_id||''} <span class="mut">${Object.entries(a.detail||{}).filter(([k])=>k!=='payload').map(([k,v])=>k+'='+v).join(' ')}</span></div>`).join('');
+}
+function sensor(kind,type){const id=$('jsel').value;n++;const vid=$('svid').value||('SIM-'+type.slice(0,3)+'-'+Date.now()%100000);
+ lastEv={event_id:'ui-'+Date.now()+'-'+n,junction_id:id,direction:$('sdir').value,event_type:kind,vehicle_id:vid,vehicle_type:type,sequence_no:n,timestamp:new Date().toISOString()};
+ if(kind==='VEHICLE_ARRIVED')$('svid').value=vid;else $('svid').value='';
+ return act(()=>api('POST','/api/sensor-events',lastEv),d=>d.result+': '+d.reason)}
+$('arr').onclick=()=>sensor('VEHICLE_ARRIVED',$('stype').value);
+$('emg').onclick=()=>{$('svid').value='';sensor('VEHICLE_ARRIVED','EMERGENCY')};
+$('clr').onclick=()=>{if(!$('svid').value){$('simmsg').textContent='Enter the vehicle id to clear (shown after an arrival).';return}sensor('VEHICLE_CLEARED',$('stype').value)};
+$('dup').onclick=()=>lastEv?act(()=>api('POST','/api/sensor-events',lastEv),d=>d.result+': '+d.reason):0;
+$('mbtn').onclick=()=>act(()=>api('POST',`/api/junctions/${$('jsel').value}/commands`,{command:'MANUAL_GREEN_REQUEST',direction:$('mdir').value,actor:'dashboard-admin'}),d=>'Accepted, mode '+d.mode);
+$('rbtn').onclick=()=>act(()=>api('POST',`/api/junctions/${$('jsel').value}/commands`,{command:'RETURN_TO_AUTOMATIC',actor:'dashboard-admin'}),d=>'Mode '+d.mode);
+$('auto').onchange=e=>act(()=>api('POST','/api/simulator',{auto_ack:e.target.checked}),d=>'auto-ACK '+d.auto_ack);
+const ack=(st)=>async()=>{try{for(const c of (S.pending_commands.slice(0,st==='ACK'?99:1)))await api('POST','/api/controller-events',{command_id:c.command_id,junction_id:S.junction_id,status:st,actual_state:st==='ACK'?c.requested_state:undefined});showErr('');refresh()}catch(e){showErr(e.message)}};
+$('ackall').onclick=ack('ACK');$('nack').onclick=ack('NACK');
+const dev=(t,st,dir)=>act(()=>api('POST','/api/controller-events',{junction_id:$('jsel').value,device_type:t,status:st,direction:dir?$('sdir').value:undefined}),d=>d.result+': '+d.reason);
+$('coff').onclick=()=>dev('SIGNAL_CONTROLLER','OFFLINE');$('con').onclick=()=>dev('SIGNAL_CONTROLLER','ONLINE');
+$('soff').onclick=()=>dev('SENSOR','OFFLINE',1);$('son').onclick=()=>dev('SENSOR','ONLINE',1);
+$('jsel').onchange=refresh;
+(async()=>{await loadJ();try{const d=await api('GET','/api/simulator');$('auto').checked=d.auto_ack}catch(e){}refresh();setInterval(refresh,1000);setInterval(loadJ,15000)})();
+</script></body></html>
